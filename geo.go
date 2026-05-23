@@ -18,7 +18,8 @@ func NewGeo() *Geo {
 	}
 	reader, err := geoip2.Open("Country.mmdb")
 	if err != nil {
-		slog.Warn("Cannot open Country.mmdb")
+		// GeoIP is optional; scanner will still work without it
+		slog.Warn("Cannot open Country.mmdb, GeoIP lookup disabled")
 		return geo
 	}
 	slog.Info("Enabled GeoIP")
@@ -36,6 +37,10 @@ func (o *Geo) GetGeo(ip net.IP) string {
 	if err != nil {
 		slog.Debug("Error reading geo", "err", err)
 		return "N/A"
+	}
+	// Fall back to registered country if the IP-level country is not set
+	if country.Country.IsoCode == "" {
+		return country.RegisteredCountry.IsoCode
 	}
 	return country.Country.IsoCode
 }
