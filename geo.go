@@ -40,6 +40,10 @@ func (o *Geo) GetGeo(ip net.IP) string {
 	}
 	// Fall back to registered country if the IP-level country is not set
 	if country.Country.IsoCode == "" {
+		// Some IPs (e.g. anycast/CDN) only have a registered country; use that
+		if country.RegisteredCountry.IsoCode == "" {
+			return "N/A"
+		}
 		return country.RegisteredCountry.IsoCode
 	}
 	return country.Country.IsoCode
