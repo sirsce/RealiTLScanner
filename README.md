@@ -40,6 +40,7 @@ It is recommended to run this tool locally, as running the scanner in the cloud 
 
 # Set a timeout for each scan, default: 10 (seconds)
 # Tip: 5s timeout works well for most cases and speeds things up significantly
+# Tip: on a slower connection, 8s may be more reliable than 5s
 ./RealiTLScanner -addr 107.172.1.1/16 -timeout 5
 ```
 ### In docker way
@@ -74,10 +75,5 @@ Example stdout:
 2024/02/08 20:51:38 INFO Scanning completed time=2024-02-08T20:51:38.988+08:00 elapsed=28.97043s
 ```
 
-Example output file:
-
-```csv
-IP,ORIGIN,CERT_DOMAIN,CERT_ISSUER,GEO_CODE
-202.70.64.2,ntc.net.np,*.ntc.net.np,"GlobalSign nv-sa",NP
-196.200.160.70,mirror.marwan.ma
+Example output
 ```
