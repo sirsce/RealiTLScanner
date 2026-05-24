@@ -2,65 +2,124 @@ package main
 
 import (
 	"crypto/tls"
-	"log/slog"
+	"fmt"
 	"net"
-	"strconv"
-	"strings"
 	"time"
 )
 
-func ScanTLS(host Host, out chan<- string, geo *Geo) {
-	if host.IP == nil {
-		ip, err := LookupIP(host.Origin)
-		if err != nil {
-			slog.Debug("Failed to get IP from the origin", "origin", host.Origin, "err", err)
-			return
-		}
-		host.IP = ip
+// ScanResult holds the result of a TLS scan for a single host.
+type ScanResult struct {
+	Host        string
+	Port        string
+	IP          string
+	ServerName  string
+	Fingerprint string
+	Version     uint16
+	IsReality   bool
+	Latency     time.Duration
+	Error       error
+}
+
+// Scanner performs TLS/Reality scanning on target hosts.
+type Scanner struct {
+	Timeout    time.Duration
+	Concurrent int
+}
+
+// NewScanner creates a new Scanner with the given timeout and concurrency.
+func NewScanner(timeout time.Duration, concurrent int) *Scanner {
+	return &Scanner{
+		Timeout:    timeout,
+		Concurrent: concurrent,
 	}
-	hostPort := net.JoinHostPort(host.IP.String(), strconv.Itoa(port))
-	conn, err := net.DialTimeout("tcp", hostPort, time.Duration(timeout)*time.Second)
+}
+
+// Scan performs a TLS handshake against the given host:port and returns a ScanResult.
+func (s *Scanner) Scan(host, port string) ScanResult {
+	result := ScanResult{
+		Host: host,
+		Port: port,
+	}
+
+	addr := net.JoinHostPort(host, port)
+
+	// Resolve IP address
+	addrs, err := net.LookupHost(host)
+	if err == nil && len(addrs) > 0 {
+		result.IP = addrs[0]
+	}
+
+	dialer := &net.Dialer{
+		Timeout: s.Timeout,
+	}
+
+	start := time.Now()
+
+	// Perform TLS dial with custom config to capture certificate details
+	conn, err := tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{
+		ServerName:         host,
+		InsecureSkipVerify: true, // We want to inspect even self-signed / Reality certs
+		MinVersion:         tls.VersionTLS12,
+	})
+
+	result.Latency = time.Since(start)
+
 	if err != nil {
-		slog.Debug("Cannot dial", "target", hostPort)
-		return
+		result.Error = fmt.Errorf("TLS dial failed: %w", err)
+		return result
 	}
 	defer conn.Close()
-	err = conn.SetDeadline(time.Now().Add(time.Duration(timeout) * time.Second))
-	if err != nil {
-		slog.Error("Error setting deadline", "err", err)
-		return
+
+	state := conn.ConnectionState()
+	result.Version = state.Version
+
+	if len(state.PeerCertificates) > 0 {
+		cert := state.PeerCertificates[0]
+		result.ServerName = cert.Subject.CommonName
+		result.Fingerprint = fingerprintCert(cert.Raw)
+		result.IsReality = detectReality(state)
 	}
-	tlsCfg := &tls.Config{
-		InsecureSkipVerify: true,
-		NextProtos:         []string{"h2", "http/1.1"},
-		CurvePreferences:   []tls.CurveID{tls.X25519},
+
+	return result
+}
+
+// ScanBatch scans a list of host:port pairs concurrently and returns results.
+func (s *Scanner) ScanBatch(targets []string) []ScanResult {
+	sem := make(chan struct{}, s.Concurrent)
+	results := make([]ScanResult, len(targets))
+	done := make(chan struct{})
+
+	for i, target := range targets {
+		go func(idx int, t string) {
+			sem <- struct{}{}
+			defer func() {
+				<-sem
+				done <- struct{}{}
+			}()
+
+			host, port, err := net.SplitHostPort(t)
+			if err != nil {
+				host = t
+				port = "443"
+			}
+			results[idx] = s.Scan(host, port)
+		}(i, target)
 	}
-	if host.Type == HostTypeDomain {
-		tlsCfg.ServerName = host.Origin
+
+	for range targets {
+		<-done
 	}
-	c := tls.Client(conn, tlsCfg)
-	err = c.Handshake()
-	if err != nil {
-		slog.Debug("TLS handshake failed", "target", hostPort)
-		return
+
+	return results
+}
+
+// detectReality attempts to heuristically detect if the server is running XTLS Reality.
+// Reality servers typically present a valid TLS 1.3 connection with a real website's certificate.
+func detectReality(state tls.ConnectionState) bool {
+	// Reality always uses TLS 1.3
+	if state.Version != tls.VersionTLS13 {
+		return false
 	}
-	state := c.ConnectionState()
-	alpn := state.NegotiatedProtocol
-	domain := state.PeerCertificates[0].Subject.CommonName
-	issuers := strings.Join(state.PeerCertificates[0].Issuer.Organization, " | ")
-	log := slog.Info
-	feasible := true
-	geoCode := geo.GetGeo(host.IP)
-	if state.Version != tls.VersionTLS13 || alpn != "h2" || len(domain) == 0 || len(issuers) == 0 {
-		// not feasible
-		log = slog.Debug
-		feasible = false
-	} else {
-		out <- strings.Join([]string{host.IP.String(), host.Origin, domain, "\"" + issuers + "\"", geoCode}, ",") +
-			"\n"
-	}
-	log("Connected to target", "feasible", feasible, "ip", host.IP.String(),
-		"origin", host.Origin,
-		"tls", tls.VersionName(state.Version), "alpn", alpn, "cert-domain", domain, "cert-issuer", issuers,
-		"geo", geoCode)
+	// Additional heuristics can be added here (e.g., ALPN, session ticket checks)
+	return true
 }
