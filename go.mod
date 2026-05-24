@@ -11,3 +11,7 @@ require (
 
 // Personal fork of XTLS/RealiTLScanner for learning and experimentation.
 // Upstream: https://github.com/XTLS/RealiTLScanner
+//
+// Notes:
+// - Bumped golang.org/x/sys to v0.17.0 for latest security patches
+// - TODO: explore adding IPv6 scanning support
